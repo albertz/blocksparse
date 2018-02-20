@@ -1,3 +1,7 @@
+
+#ifndef __blocksparse_ew_op_gpu_h__
+#define __blocksparse_ew_op_gpu_h__
+
 #include "gpu_types.h"
 
 #define UNARY_VEC2(op, res, a) \
@@ -1126,3 +1130,6 @@ MATH_DZ_X(ew_sqr_grad,   _sqr_grad)
 MATH_DZ_X(ew_sqrt_grad, _sqrt_grad)
 MATH_DZ_X(ew_exp_grad,   _exp_grad)
 MATH_DZ_X(ew_log_grad,   _log_grad)
+
+
+#endif

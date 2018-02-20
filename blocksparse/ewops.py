@@ -10,14 +10,12 @@ import numpy as np
 import tensorflow as tf
 import operator
 from tensorflow.python.framework import ops
+from . import op_module
+
 if sys.version_info >= (3, 0):
     from functools import reduce
 
-data_files_path = tf.resource_loader.get_data_files_path()
-_op_module = tf.load_op_library(os.path.join(data_files_path, 'blocksparse_ops.so'))
-# for x in dir(_op_module):
-#     print(x)
-# exit()
+_op_module = op_module.get_module()
 
 ew_z_xy_op      = _op_module.ew_z_xy
 ew_z_xa_op      = _op_module.ew_z_xa
@@ -161,9 +159,9 @@ lstm_gates4_grad_op = _op_module.lstm_gates4_grad
 
 def fused_lstm_gates(c, *args, **kwargs):
     # returns c_next, h_next
-    
+
     assert len(kwargs) <= 1
-    name = kwargs.pop('name', None)    
+    name = kwargs.pop('name', None)
     # args is h (all four gates fused in single tensor)
     if len(args) == 1:
         return lstm_gates_op(c, args[0], name=name)

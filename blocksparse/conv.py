@@ -10,11 +10,12 @@ import numpy as np
 import tensorflow as tf
 from operator import mul, lt
 from tensorflow.python.framework import ops
+from . import op_module
+
 if sys.version_info >= (3, 0):
     from functools import reduce
 
-data_files_path = tf.resource_loader.get_data_files_path()
-_op_module = tf.load_op_library(os.path.join(data_files_path, 'blocksparse_ops.so'))
+_op_module = op_module.get_module()
 
 blocksparse_conv_op     = _op_module.blocksparse_conv
 blocksparse_deconv_op   = _op_module.blocksparse_deconv

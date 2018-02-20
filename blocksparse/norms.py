@@ -10,11 +10,12 @@ import numpy as np
 import tensorflow as tf
 from operator import mul
 from tensorflow.python.framework import ops
+from . import op_module
+
 if sys.version_info >= (3, 0):
     from functools import reduce
 
-data_files_path = tf.resource_loader.get_data_files_path()
-_op_module = tf.load_op_library(os.path.join(data_files_path, 'blocksparse_ops.so'))
+_op_module = op_module.get_module()
 
 layer_norm_op            = _op_module.layer_norm
 layer_norm_grad_op       = _op_module.layer_norm_grad

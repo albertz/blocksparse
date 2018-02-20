@@ -74,8 +74,6 @@ public:
 
 
 
-
-
 Status GetKernel(std::string& kernel_name, CUfunction* kernel);
 
 template <CTYPE3(TA,TB,TC)>

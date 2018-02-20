@@ -4,16 +4,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os.path
 import numpy as np
 import tensorflow as tf
 import scipy.sparse as sparse
 from tensorflow.python.framework import ops
 from tensorflow.python.ops.init_ops import Initializer
-import blocksparse.ewops as ew
+from . import ewops as ew
+from . import op_module
 
-data_files_path = tf.resource_loader.get_data_files_path()
-_op_module = tf.load_op_library(os.path.join(data_files_path, 'blocksparse_ops.so'))
+_op_module = op_module.get_module()
+
 blocksparse_matmul        = _op_module.blocksparse_matmul
 blocksparse_matmul_dx     = _op_module.blocksparse_matmul_dx
 blocksparse_matmul_dw     = _op_module.blocksparse_matmul_dw

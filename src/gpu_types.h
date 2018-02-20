@@ -1,4 +1,7 @@
 
+#ifndef __blocksparse_gpu_types__
+#define __blocksparse_gpu_types__
+
 #include <cuda.h>
 #include <vector_types.h>
 #include <cuda_runtime.h>
@@ -150,3 +153,5 @@ class Benchmark
     bool isgpu_;
     double us_start_;
 };
+
+#endif
