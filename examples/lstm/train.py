@@ -11,9 +11,9 @@ import platform
 import numpy      as np
 import tensorflow as tf
 from tqdm   import tqdm
-import layers
-from layers import HParams, LSTM_Model
-from utils  import text8, text8_stream, wiki3, wiki3_stream, num_trainable_params, print_trainable_params, make_path, JsonLogger
+from . import layers
+from .layers import HParams, LSTM_Model
+from .utils  import text8, text8_stream, wiki3, wiki3_stream, num_trainable_params, print_trainable_params, make_path, JsonLogger
 from tensorflow.contrib import nccl
 #from tensorflow.python.client import timeline
 

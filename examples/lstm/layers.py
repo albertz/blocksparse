@@ -4,11 +4,12 @@ from   sklearn.externals  import joblib
 from   blocksparse.matmul import BlocksparseMatMul, SparseProj, group_param_grads, get_parents, add_control_input, largest_block
 from   blocksparse.norms  import layer_norm
 import blocksparse.ewops  as ew
-import masks
+from . import masks
 
-from utils import ones_initializer, zeros_initializer, normal_initializer, ortho_initializer, make_path, ceil_div
+from .utils import ones_initializer, zeros_initializer, normal_initializer, ortho_initializer, make_path, ceil_div
 
 agg_method=0 # set to 3 when in bfloat16 mode
+
 
 # Debugging function
 def print_act_stats(x, _str="", flatten=False):
@@ -28,6 +29,7 @@ def print_act_stats(x, _str="", flatten=False):
     __str = "["+_str+"] "+x.name
     print(__str)
     return tf.Print(x, stats, __str)
+
 
 class HParams(object):
 
