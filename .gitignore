@@ -96,4 +96,7 @@ logs/
 temp/
 lib/
 build/
-**/.DS_Store
+.DS_Store
+
+.history*
+
