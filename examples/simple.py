@@ -1,3 +1,7 @@
+import sys
+sys.path.insert(0, "..")  # blocksparse base
+sys.path.insert(0, "../../..")  # Returnn base
+
 from blocksparse.matmul import BlocksparseMatMul
 import tensorflow as tf
 import numpy as np

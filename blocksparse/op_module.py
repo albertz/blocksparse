@@ -20,7 +20,7 @@ def get_module():
     "layer_norm_cn_op_gpu.cu", "layer_norm_nc_op_gpu.cu"
   ]
 
-  src_dir = os.path.normpath(os.path.dirname(__file__) + "/../src")
+  src_dir = os.path.abspath(os.path.dirname(__file__) + "/../src")
   assert os.path.isdir(src_dir)
   src_code = ""
   for fn in cc_files + cu_files:
