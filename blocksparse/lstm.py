@@ -6,7 +6,7 @@ import tensorflow as tf
 from tensorflow.python.ops.nn import rnn_cell
 
 
-class BlocksparseLSTM(rnn_cell.RNNCell):
+class BlocksparseLSTMCell(rnn_cell.RNNCell):
   """
   Standard LSTM but uses OpenAI blocksparse kernels to support bigger matrices.
 
@@ -23,7 +23,7 @@ class BlocksparseLSTM(rnn_cell.RNNCell):
     """
     :param int num_units:
     """
-    super(BlocksparseLSTM, self).__init__()
+    super(BlocksparseLSTMCell, self).__init__()
     self.num_units = num_units
     self.block_size = block_size
     self.connectivity = connectivity
@@ -126,10 +126,11 @@ def sparsity_pattern_barabasi_albert(n1, n2, m, seed):
     return sparsity_pattern_barabasi_albert(n1=n2, n2=n1, m=m, seed=seed).transpose()
   assert n2 >= n1 and n2 % n1 == 0
   assert m <= n1
-  numpy.random.seed(seed)
+  random = numpy.random.RandomState(seed)
+  seeds = [random.randint(2 ** 31) for i in range(n2 // n1)]
   parts = [
-    sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=numpy.random.randint(2 ** 31))
-    for i in range(n2 // n1)]
+    sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=seed)
+    for seed in seeds]
   a = numpy.concatenate(parts, axis=1)
   assert a.shape == (n1, n2)
   return a
