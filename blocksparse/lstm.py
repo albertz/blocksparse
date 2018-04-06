@@ -50,11 +50,12 @@ class BlocksparseLSTM(rnn_cell.RNNCell):
 
   def linear(self, x, output_dim, block_size=None, connectivity=None, seed=None):
     """
-    :param tf.Tensor x:
+    :param tf.Tensor x: (..., input_dim)
     :param int output_dim:
     :param int|None block_size:
     :param int|None connectivity:
     :param int|None seed:
+    :return: x.shape[:-1] + [output_dim]
     :rtype: tf.Tensor
     """
     if block_size is None:
@@ -63,7 +64,8 @@ class BlocksparseLSTM(rnn_cell.RNNCell):
       connectivity = self.connectivity
     if seed is None:
       seed = self.random.randint(2 ** 31)
-    input_dim = x.get_shape().dims[-1].value
+    x_dims = x.get_shape().dims
+    input_dim = x_dims[-1].value
     assert input_dim is not None, "%r shape unknown" % (x,)
     assert input_dim % block_size == 0 and output_dim % block_size == 0
 
@@ -72,8 +74,12 @@ class BlocksparseLSTM(rnn_cell.RNNCell):
       n1=input_dim // block_size, n2=output_dim // block_size, m=connectivity, seed=seed)
     bsmm = BlocksparseMatMul(sparsity, block_size=block_size, feature_axis=0)
     weights = tf.get_variable("W", shape=bsmm.w_shape)
-    x = bsmm(x, weights)
-    return x
+    x = tf.transpose(x, [len(x_dims) - 1] + list(range(len(x_dims) - 1)))  # move feature axis
+    y = bsmm(x, weights)
+    assert isinstance(x, tf.Tensor)
+    y = tf.transpose(y, list(range(1, len(x_dims))) + [0])  # move feature axis
+    y.set_shape(x_dims[:-1] + [output_dim])
+    return y
 
   def call(self, inputs, state):
     assert isinstance(inputs, tf.Tensor)
