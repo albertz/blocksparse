@@ -6,7 +6,20 @@ import tensorflow as tf
 from tensorflow.python.ops.nn import rnn_cell
 
 
-class Linear:
+class LinearBase:
+  def __call__(self, x, output_dim, feature_axis=None, with_bias=True):
+    """
+    :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
+    :param int output_dim:
+    :param int feature_axis: specifies the feature axis of `x` and the return value
+    :param bool with_bias:
+    :return: x.shape[:-1] + [output_dim] (if feature_axis = -1)
+    :rtype: tf.Tensor
+    """
+    raise NotImplementedError
+
+
+class BlocksparseLinear(LinearBase):
   def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1):
     """
     :param int seed: for the random sparsity pattern(s)
@@ -20,6 +33,7 @@ class Linear:
     self.mul_feature_axis = mul_feature_axis
     self.feature_axis = feature_axis
     self.random = numpy.random.RandomState(seed)
+    self.matmuls = []
 
   @staticmethod
   def move_feature_axis(x, old_axis, new_axis):
@@ -44,11 +58,12 @@ class Linear:
     perm.insert(new_axis, old)
     return tf.transpose(x, perm, name="move_feature_axis")
 
-  def __call__(self, x, output_dim, feature_axis=None):
+  def __call__(self, x, output_dim, feature_axis=None, with_bias=True):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
     :param int output_dim:
     :param int feature_axis: specifies the feature axis of `x` and the return value
+    :param bool with_bias:
     :return: x.shape[:-1] + [output_dim] (if feature_axis = -1)
     :rtype: tf.Tensor
     """
@@ -62,18 +77,27 @@ class Linear:
     assert input_dim % block_size == 0 and output_dim % block_size == 0
 
     from blocksparse.matmul import BlocksparseMatMul
-    sparsity = sparsity_pattern_barabasi_albert(
+    sparsity_pattern = sparsity_pattern_barabasi_albert(
       n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
-    bsmm = BlocksparseMatMul(sparsity, block_size=block_size, feature_axis=self.mul_feature_axis)
-    weights = tf.get_variable("W", shape=bsmm.w_shape)
+    bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=self.mul_feature_axis)
+    weights = tf.get_variable("W", shape=bsmm.w_shape, initializer=bsmm.identity_init())
 
     x = self.move_feature_axis(x, old_axis=feature_axis, new_axis=self.mul_feature_axis)
     y = bsmm(x, weights)
-    assert isinstance(x, tf.Tensor)
+    assert isinstance(y, tf.Tensor)
+
+    if with_bias:
+      bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
+      bias_bc = tf.reshape(bias, [output_dim if i == self.mul_feature_axis else 1 for i in range(len(x_dims))])
+      y += bias_bc
+    else:
+      bias = None
+
     y = self.move_feature_axis(y, old_axis=self.mul_feature_axis, new_axis=feature_axis)
     y_dims = list(x_dims)
     y_dims[feature_axis] = output_dim
     y.set_shape(y_dims)
+    self.matmuls.append({"bsmm": bsmm, "x": x, "y": y, "weights": weights, "bias": bias})
     return y
 
 
@@ -137,7 +161,7 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
     """
     super(BlocksparseLSTMCell, self).__init__()
     self.num_units = num_units
-    self.linear = Linear(block_size=block_size, connectivity=connectivity, seed=seed)
+    self.linear = BlocksparseLinear(block_size=block_size, connectivity=connectivity, seed=seed)
 
   @property
   def output_size(self):
@@ -155,16 +179,17 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
     with tf.variable_scope('input'):
       dim = self.num_units * 4
       x = self.linear(x, dim)
-      x += tf.get_variable("b", shape=(dim,))
+      x += tf.get_variable("b", shape=(dim,), initializer=tf.zeros_initializer())
       x.set_shape((None, None, dim))  # (time,batch,dim)
       return x
 
+  # noinspection PyMethodOverriding
   def call(self, inputs, state):
     assert isinstance(inputs, tf.Tensor)
     assert isinstance(state, rnn_cell.LSTMStateTuple)
 
     dim = self.num_units * 4
-    x = self.linear(state.h, dim) + inputs
+    x = self.linear(state.h, dim, with_bias=False) + inputs
     cell_in, gate_in, gate_forget, gate_out = tf.split(x, 4, axis=-1)
     cell_in = tf.tanh(cell_in)
     gate_in = tf.sigmoid(gate_in)
@@ -191,10 +216,11 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
   _num_parts_step1 = 3  # additive, multiplicative
   _num_parts_step_final = 4  # cell-in, gate-in, gate-forget, gate-out
 
-  def __init__(self, num_units, depth, seed, block_size=32, connectivity=5):
+  def __init__(self, num_units, depth, linear_op=None, **linear_opts):
     """
     :param int num_units:
     :param int depth: internal depth
+    :param BlocksparseLinear linear_op:
     :param int seed:
     :param int block_size:
     :param int connectivity:
@@ -203,7 +229,10 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     super(BlocksparseMultiplicativeMultistepLSTMCell, self).__init__()
     self.num_units = num_units
     self.depth = depth
-    self.linear = Linear(block_size=block_size, connectivity=connectivity, seed=seed)
+    if linear_op:
+      self.linear = linear_op
+    else:
+      self.linear = BlocksparseLinear(**linear_opts)
 
   @property
   def output_size(self):
@@ -221,10 +250,10 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     with tf.variable_scope('input'):
       dim = self.num_units * self._num_parts_step1
       x = self.linear(x, dim)
-      x += tf.get_variable("b", shape=(dim,))
       x.set_shape((None, None, dim))  # (time,batch,dim)
       return x
 
+  # noinspection PyMethodOverriding
   def call(self, inputs, state):
     """
     :param tf.Tensor inputs: (batch, num_units * 4)
@@ -242,7 +271,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     with tf.variable_scope("step0"):
       dim = self.num_units * self._num_parts_step1
       # Note: inputs has a bias already.
-      x += self.linear(h, dim, feature_axis=self.linear.mul_feature_axis)
+      x += self.linear(h, dim, with_bias=False, feature_axis=self.linear.mul_feature_axis)
       x1, x2, x3 = tf.split(x, self._num_parts_step1, axis=self.linear.mul_feature_axis)
       x = tf.nn.relu(x1 + x2 * x3)
 
@@ -250,7 +279,6 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
       with tf.variable_scope('step%i' % step):
         dim = self.num_units
         x = self.linear(x, dim, feature_axis=self.linear.mul_feature_axis)
-        x += tf.expand_dims(tf.get_variable("b", shape=(dim,)), axis=self.linear.mul_feature_axis + 1)
         x = tf.nn.relu(x)
         x.set_shape((dim if self.linear.mul_feature_axis == 0 else None, None))
 
