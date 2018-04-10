@@ -7,6 +7,8 @@ from tensorflow.python.ops.nn import rnn_cell
 
 
 class LinearBase:
+  mul_feature_axis = -1
+
   def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
@@ -223,9 +225,6 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
 
   """
 
-  _num_parts_step1 = 3  # additive, multiplicative
-  _num_parts_step_final = 4  # cell-in, gate-in, gate-forget, gate-out
-
   def __init__(self, num_units, depth, dense_input_transform=False, linear_op=None, **linear_opts):
     """
     :param int num_units:
@@ -236,7 +235,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     :param int block_size:
     :param int connectivity:
     """
-    assert depth >= 1
+    assert depth >= 2
     super(BlocksparseMultiplicativeMultistepLSTMCell, self).__init__()
     self.num_units = num_units
     self.depth = depth
@@ -257,52 +256,64 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
   def get_input_transformed(self, x):
     """
     :param tf.Tensor x:
-    :rtype: tf.Tensor
+    :rtype: (tf.Tensor, tf.Tensor)
     """
     with tf.variable_scope('input'):
-      dim = self.num_units * self._num_parts_step1
-      x = self.linear(x, dim, dense=self.dense_input_transform)
-      x.set_shape((None, None, dim))  # (time,batch,dim)
-      return x
+      with tf.variable_scope('x1'):
+        dim = self.num_units
+        x1 = self.linear(x, dim, dense=self.dense_input_transform)
+        x1.set_shape((None, None, dim))  # (time,batch,dim)
+      with tf.variable_scope('x2'):
+        dim = self.num_units
+        x2 = self.linear(x, dim, dense=self.dense_input_transform)
+        x2.set_shape((None, None, dim))  # (time,batch,dim)
+      return x1, x2
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
     """
-    :param tf.Tensor inputs: (batch, num_units * 4)
+    :param (tf.Tensor,tf.Tensor) inputs: each (batch, num_units)
     :param rnn_cell.LSTMStateTuple state: (batch, num_units)
     :return: output, new_state
     """
-    assert isinstance(inputs, tf.Tensor)
+    _x1, _x2 = inputs
+    assert isinstance(_x1, tf.Tensor) and isinstance(_x2, tf.Tensor), "inputs %r unexpected" % (inputs,)
     assert isinstance(state, rnn_cell.LSTMStateTuple)
     # All internal steps performed with moved feature axis, should be faster.
-    x = self.linear.move_feature_axis(inputs, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+    x1 = self.linear.move_feature_axis(_x1, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+    x2 = self.linear.move_feature_axis(_x2, old_axis=-1, new_axis=self.linear.mul_feature_axis)
     h = self.linear.move_feature_axis(state.h, old_axis=-1, new_axis=self.linear.mul_feature_axis)
     c = self.linear.move_feature_axis(state.c, old_axis=-1, new_axis=self.linear.mul_feature_axis)
 
-    # This is counted as step 1.
     with tf.variable_scope("step0"):
-      dim = self.num_units * self._num_parts_step1
-      # Note: inputs has a bias already.
-      x += self.linear(h, dim, with_bias=False, feature_axis=self.linear.mul_feature_axis)
-      x1, x2, x3 = tf.split(x, self._num_parts_step1, axis=self.linear.mul_feature_axis)
-      x = tf.nn.relu(x1 + x2 * x3)
+      dim = self.num_units
+      h = self.linear(h, dim, with_bias=False, feature_axis=self.linear.mul_feature_axis)
+      h *= x1
+    with tf.variable_scope("step1"):
+      h = self.linear(h, dim, with_bias=False, feature_axis=self.linear.mul_feature_axis)
+      h += x2
+      h = tf.nn.relu(h)
 
-    for step in range(1, self.depth):
+    for step in range(2, self.depth):
       with tf.variable_scope('step%i' % step):
         dim = self.num_units
-        x = self.linear(x, dim, feature_axis=self.linear.mul_feature_axis)
-        x = tf.nn.relu(x)
-        x.set_shape((dim if self.linear.mul_feature_axis == 0 else None, None))
+        h = self.linear(h, dim, feature_axis=self.linear.mul_feature_axis)
+        h = tf.nn.relu(h)
+        h.set_shape((dim if self.linear.mul_feature_axis == 0 else None, None))
 
     with tf.variable_scope("gating"):
-      dim = self.num_units * self._num_parts_step_final
-      x = self.linear(x, dim, feature_axis=self.linear.mul_feature_axis)
-      cell_in, gate_in, gate_forget, gate_out = tf.split(
-        x, self._num_parts_step_final, axis=self.linear.mul_feature_axis)
-      cell_in = tf.tanh(cell_in)
-      gate_in = tf.sigmoid(gate_in)
-      gate_forget = tf.sigmoid(gate_forget)
-      gate_out = tf.sigmoid(gate_out)
+      with tf.variable_scope("cell_in"):
+        cell_in = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        cell_in = tf.tanh(cell_in)
+      with tf.variable_scope("gate_in"):
+        gate_in = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        gate_in = tf.sigmoid(gate_in)
+      with tf.variable_scope("gate_forget"):
+        gate_forget = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        gate_forget = tf.sigmoid(gate_forget)
+      with tf.variable_scope("gate_out"):
+        gate_out = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        gate_out = tf.sigmoid(gate_out)
       cell = c * gate_forget + cell_in * gate_in
       out = tf.tanh(cell) * gate_out
 
@@ -311,5 +322,5 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     out = self.linear.move_feature_axis(out, old_axis=self.linear.mul_feature_axis, new_axis=-1)
     cell.set_shape((None, self.num_units))
     out.set_shape((None, self.num_units))
-    assert out.get_shape().dims[0].value == cell.get_shape().dims[0].value == inputs.get_shape().dims[0].value, 'b.dim'
+    assert out.get_shape().dims[0].value == cell.get_shape().dims[0].value == _x1.get_shape().dims[0].value, 'b.dim'
     return out, rnn_cell.LSTMStateTuple(c=cell, h=out)
