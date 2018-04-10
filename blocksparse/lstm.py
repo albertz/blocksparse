@@ -6,23 +6,7 @@ import tensorflow as tf
 from tensorflow.python.ops.nn import rnn_cell
 
 
-class LinearBase:
-  mul_feature_axis = -1
-
-  def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False):
-    """
-    :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
-    :param int output_dim:
-    :param int feature_axis: specifies the feature axis of `x` and the return value
-    :param bool with_bias:
-    :param bool dense:
-    :return: x.shape[:-1] + [output_dim] (if feature_axis = -1)
-    :rtype: tf.Tensor
-    """
-    raise NotImplementedError
-
-
-class BlocksparseLinear(LinearBase):
+class BlocksparseLinear:
   def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1, layer_norm=True):
     """
     :param int seed: for the random sparsity pattern(s)
@@ -253,7 +237,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     :param int num_units:
     :param int depth: internal depth
     :param bool dense_input_transform:
-    :param LinearBase linear_op:
+    :param BlocksparseLinear linear_op:
     :param int seed:
     :param int block_size:
     :param int connectivity:
