@@ -7,7 +7,8 @@ from tensorflow.python.ops.nn import rnn_cell
 
 
 class BlocksparseLinear:
-  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1, layer_norm=True):
+  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1, layer_norm=True,
+               always_dense=False):
     """
     :param int seed: for the random sparsity pattern(s)
     :param int block_size: for BlocksparseMatMul
@@ -15,12 +16,14 @@ class BlocksparseLinear:
     :param int mul_feature_axis: for BlocksparseMatMul
     :param int feature_axis: specifies the feature axis of the in/out values, see :func:`self.__call__`
     :param bool layer_norm: apply layer normalization in each linear call
+    :param bool always_dense:
     """
     self.block_size = block_size
     self.connectivity = connectivity
     self.mul_feature_axis = mul_feature_axis
     self.feature_axis = feature_axis
     self.layer_norm = layer_norm
+    self.always_dense = always_dense
     self.random = numpy.random.RandomState(seed)
     self.matmuls = []
 
@@ -67,6 +70,8 @@ class BlocksparseLinear:
     assert input_dim is not None, "%r shape unknown" % (x,)
     assert input_dim % block_size == 0 and output_dim % block_size == 0
 
+    if self.always_dense:
+      dense = True
     if dense:
       mul_feature_axis = -1
     if mul_feature_axis < 0:
