@@ -23,18 +23,20 @@ class LinearBase:
 
 
 class BlocksparseLinear(LinearBase):
-  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1):
+  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1, layer_norm=True):
     """
     :param int seed: for the random sparsity pattern(s)
     :param int block_size: for BlocksparseMatMul
     :param int connectivity: used for :func:`sparsity_pattern_barabasi_albert`
     :param int mul_feature_axis: for BlocksparseMatMul
     :param int feature_axis: specifies the feature axis of the in/out values, see :func:`self.__call__`
+    :param bool layer_norm: apply layer normalization in each linear call
     """
     self.block_size = block_size
     self.connectivity = connectivity
     self.mul_feature_axis = mul_feature_axis
     self.feature_axis = feature_axis
+    self.layer_norm = layer_norm
     self.random = numpy.random.RandomState(seed)
     self.matmuls = []
 
@@ -107,6 +109,17 @@ class BlocksparseLinear(LinearBase):
       weights = tf.get_variable("W", shape=bsmm.w_shape)
       y = bsmm(x, weights)
     assert isinstance(y, tf.Tensor)
+
+    if self.layer_norm:
+      # see :func:`tensorflow.contrib.layers.layer_norm`
+      # Epsilon: OpenAI uses 1e-6, TF contrib uses 1e-12, pbhatia243 uses 1e-5.
+      epsilon = 1e-6
+      m, v = tf.nn.moments(y, axes=[mul_feature_axis], keep_dims=True)
+      inv = tf.rsqrt(v + epsilon)
+      gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
+      gain_bc = tf.reshape(gain, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="g_bc")
+      inv *= gain_bc
+      y = y * inv - m * inv
 
     if with_bias:
       bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
