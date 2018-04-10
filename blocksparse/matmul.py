@@ -277,12 +277,12 @@ class BlocksparseMatMul(object):
 
         def _initializer(shape, dtype=np.float32, partition_info=None):
             print("%s identity_init sparsity(%.2f)" % (self.name, self.sparsity))
-            W = np.zeros(self.w_shape, dtype=dtype)
+            W = np.zeros(self.w_shape, dtype=np.float32)
             for w in range(self.blocks):
                 cb, kb = self.updat_list[w]
                 if (cb % self.KB) == (kb % self.CB):
-                    W[w] = np.eye(self.bsize, dtype=dtype)
-            return W
+                    W[w] = np.eye(self.bsize, dtype=np.float32)
+            return tf.constant(W, dtype=dtype)
         return _initializer
 
 
