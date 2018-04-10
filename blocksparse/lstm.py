@@ -71,7 +71,6 @@ class BlocksparseLinear:
     x_dims = x.get_shape().dims
     input_dim = x_dims[feature_axis].value
     assert input_dim is not None, "%r shape unknown" % (x,)
-    assert input_dim % block_size == 0 and output_dim % block_size == 0
 
     if self.always_dense:
       dense = True
@@ -94,6 +93,7 @@ class BlocksparseLinear:
       if len(x_dims) > 2:
         y = tf.reshape(y, [x_shape[i] for i in range(len(x_dims) - 1)] + [output_dim], name="reshape_y")
     else:
+      assert input_dim % block_size == 0 and output_dim % block_size == 0
       from blocksparse.matmul import BlocksparseMatMul
       sparsity_pattern = sparsity_pattern_barabasi_albert(
         n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
