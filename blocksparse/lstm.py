@@ -7,7 +7,8 @@ from tensorflow.python.ops.nn import rnn_cell
 
 
 class BlocksparseLinear:
-  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1, layer_norm=True,
+  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1,
+               layer_norm=True, fast_layer_norm=True,
                always_dense=False):
     """
     :param int seed: for the random sparsity pattern(s)
@@ -16,6 +17,7 @@ class BlocksparseLinear:
     :param int mul_feature_axis: for BlocksparseMatMul
     :param int feature_axis: specifies the feature axis of the in/out values, see :func:`self.__call__`
     :param bool layer_norm: apply layer normalization in each linear call
+    :param bool fast_layer_norm: layer norm implementation by OpenAI
     :param bool always_dense:
     """
     self.block_size = block_size
@@ -23,6 +25,7 @@ class BlocksparseLinear:
     self.mul_feature_axis = mul_feature_axis
     self.feature_axis = feature_axis
     self.layer_norm = layer_norm
+    self.fast_layer_norm = fast_layer_norm
     self.always_dense = always_dense
     self.random = numpy.random.RandomState(seed)
     self.matmuls = []
@@ -99,23 +102,30 @@ class BlocksparseLinear:
       y = bsmm(x, weights)
     assert isinstance(y, tf.Tensor)
 
-    if self.layer_norm:
-      # see :func:`tensorflow.contrib.layers.layer_norm`
-      # Epsilon: OpenAI uses 1e-6, TF contrib uses 1e-12, pbhatia243 uses 1e-5.
-      epsilon = 1e-6
-      m, v = tf.nn.moments(y, axes=[mul_feature_axis], keep_dims=True)
-      inv = tf.rsqrt(v + epsilon)
-      gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
-      gain_bc = tf.reshape(gain, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="g_bc")
-      inv *= gain_bc
-      y = y * inv - m * inv
-
-    if with_bias:
+    if self.layer_norm and self.fast_layer_norm:
       bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
-      bias_bc = tf.reshape(bias, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="b_bc")
-      y += bias_bc
+      gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
+      from blocksparse.norms import layer_norm
+      y = layer_norm(y, g=gain, b=bias, axis=mul_feature_axis)
+
     else:
-      bias = None
+      if self.layer_norm:
+        # see :func:`tensorflow.contrib.layers.layer_norm`
+        # Epsilon: OpenAI uses 1e-6, TF contrib uses 1e-12, pbhatia243 uses 1e-5.
+        epsilon = 1e-6
+        m, v = tf.nn.moments(y, axes=[mul_feature_axis], keep_dims=True)
+        inv = tf.rsqrt(v + epsilon)
+        gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
+        gain_bc = tf.reshape(gain, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="g_bc")
+        inv *= gain_bc
+        y = y * inv - m * inv
+
+      if with_bias:
+        bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
+        bias_bc = tf.reshape(bias, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="b_bc")
+        y += bias_bc
+      else:
+        bias = None
 
     y = self.move_feature_axis(y, old_axis=mul_feature_axis, new_axis=feature_axis)
     y_dims = list(x_dims)
