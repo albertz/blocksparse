@@ -80,7 +80,7 @@ class BlocksparseLinear(LinearBase):
     sparsity_pattern = sparsity_pattern_barabasi_albert(
       n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
     bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=self.mul_feature_axis)
-    weights = tf.get_variable("W", shape=bsmm.w_shape, initializer=bsmm.identity_init())
+    weights = tf.get_variable("W", shape=bsmm.w_shape)
 
     x = self.move_feature_axis(x, old_axis=feature_axis, new_axis=self.mul_feature_axis)
     y = bsmm(x, weights)
