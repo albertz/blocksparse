@@ -83,12 +83,22 @@ class BlocksparseLinear(LinearBase):
 
     if dense:
       mul_feature_axis = -1
+    if mul_feature_axis < 0:
+      mul_feature_axis += len(x_dims)
+      assert mul_feature_axis >= 0
     x = self.move_feature_axis(x, old_axis=feature_axis, new_axis=mul_feature_axis)
 
     if dense:
       bsmm = None
       weights = tf.get_variable("W", shape=(input_dim, output_dim))
+      if len(x_dims) > 2:
+        x_shape = tf.shape(x)
+        x = tf.reshape(x, (-1, input_dim), name='reshape_x')
+      else:
+        x_shape = None
       y = tf.matmul(x, weights)
+      if len(x_dims) > 2:
+        y = tf.reshape(y, [x_shape[i] for i in range(len(x_dims) - 1)] + [output_dim], name="reshape_y")
     else:
       from blocksparse.matmul import BlocksparseMatMul
       sparsity_pattern = sparsity_pattern_barabasi_albert(
@@ -100,7 +110,7 @@ class BlocksparseLinear(LinearBase):
 
     if with_bias:
       bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
-      bias_bc = tf.reshape(bias, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))])
+      bias_bc = tf.reshape(bias, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="b_bc")
       y += bias_bc
     else:
       bias = None
