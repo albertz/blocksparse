@@ -102,7 +102,9 @@ class BlocksparseLinear:
       y = bsmm(x, weights)
     assert isinstance(y, tf.Tensor)
 
-    if self.layer_norm and self.fast_layer_norm:
+    if self.layer_norm and self.fast_layer_norm and mul_feature_axis == len(x_dims) - 1:
+      # OpenAI kernel seems broken with axis != -1.
+      # See RETURNN test case test_layer_norms.
       bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
       gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
       from blocksparse.norms import layer_norm
