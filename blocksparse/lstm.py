@@ -249,25 +249,38 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
 
   """
 
-  def __init__(self, num_units, depth, dense_input_transform=False, linear_op=None, **linear_opts):
+  def __init__(self, num_units, depth,
+               is_training=True, dropout_time_shared=True, rec_dropout_h=0.0, rec_dropout_u=0.0,
+               dense_input_transform=False, linear_op=None, **linear_opts):
     """
     :param int num_units:
     :param int depth: internal depth
-    :param bool dense_input_transform:
+    :param bool|tf.Tensor is_training: used to decide whether to apply dropout
+    :param bool dropout_time_shared: whether to use the same dropout mask for all time frames
+    :param float rec_dropout_h: applied on h.
+    :param float rec_dropout_u: applied on u. OpenAI used this with rec_dropout_time_shared=False
+    :param bool dense_input_transform: dense matrix for input->hidden. also see always_dense
     :param BlocksparseLinear linear_op:
     :param int seed:
     :param int block_size:
     :param int connectivity:
+    :param bool always_dense: blocksparse is not used. all matrices will be dense
     """
     assert depth >= 2
     super(BlocksparseMultiplicativeMultistepLSTMCell, self).__init__()
     self.num_units = num_units
     self.depth = depth
     self.dense_input_transform = dense_input_transform
+    self.is_training = is_training
+    self.dropout_time_shared = dropout_time_shared
+    self.rec_dropout_h = rec_dropout_h
+    self.rec_dropout_u = rec_dropout_u
     if linear_op:
       self.linear = linear_op
     else:
       self.linear = BlocksparseLinear(**linear_opts)
+    self._num_batch = None
+    self._num_time = None
 
   @property
   def output_size(self):
@@ -279,10 +292,13 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
 
   def get_input_transformed(self, x):
     """
-    :param tf.Tensor x:
+    :param tf.Tensor x: time-major, (time, batch, dim)
     :rtype: (tf.Tensor, tf.Tensor)
     """
     with tf.variable_scope('input'):
+      shape = tf.shape(x)
+      self._num_time = shape[0]
+      self._num_batch = shape[1]
       with tf.variable_scope('x1'):
         dim = self.num_units
         x1 = self.linear(x, dim, dense=self.dense_input_transform)
@@ -292,6 +308,48 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
         x2 = self.linear(x, dim, dense=self.dense_input_transform)
         x2.set_shape((None, None, dim))  # (time,batch,dim)
       return x1, x2
+
+  def dropout(self, x, drop_rate, inside_loop, batch_axis=None):
+    """
+    :param tf.Tensor x:
+    :param float drop_rate:
+    :param bool inside_loop: whether this is called from inside the loop
+    :param int batch_axis:
+    :rtype: tf.Tensor
+    """
+    if not drop_rate:
+      return x
+    if self.is_training is False:
+      return x
+    assert inside_loop, 'not implemented otherwise yet'
+
+    def get_dropped():
+      if self.dropout_time_shared:
+        # Create mask outside of loop.
+        with tf.control_dependencies(None), tf.name_scope('dropout_mask'):
+          shape = x.get_shape().as_list()
+          if batch_axis is not None:
+            shape[batch_axis] = self._num_batch
+          assert all([d is not None for d in shape]), 'x %r, batch %r, axis %r' % (x, self._num_batch, batch_axis)
+          import zlib
+          dropout_seed = zlib.crc32(tf.get_variable_scope().name.encode("utf8")) % (2**31 - 1)
+          keep_prob = 1.0 - drop_rate
+          # uniform [keep_prob, 1.0 + keep_prob)
+          random_tensor = keep_prob
+          random_tensor += tf.random_uniform(shape, seed=dropout_seed, dtype=tf.float32)
+          # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
+          binary_tensor = tf.floor(random_tensor)
+          mask = binary_tensor * (1.0 / keep_prob)
+        return x * mask
+      else:
+        # Not shared across time. We can use the fast implementation by OpenAI.
+        import blocksparse.ewops as ew
+        x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
+        return x_
+
+    if self.is_training is True:
+      return get_dropped()
+    return tf.cond(self.is_training, get_dropped, lambda: x)
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
@@ -303,11 +361,15 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     _x1, _x2 = inputs
     assert isinstance(_x1, tf.Tensor) and isinstance(_x2, tf.Tensor), "inputs %r unexpected" % (inputs,)
     assert isinstance(state, rnn_cell.LSTMStateTuple)
-    # All internal steps performed with moved feature axis, should be faster.
-    x1 = self.linear.move_feature_axis(_x1, old_axis=-1, new_axis=self.linear.mul_feature_axis)
-    x2 = self.linear.move_feature_axis(_x2, old_axis=-1, new_axis=self.linear.mul_feature_axis)
-    h = self.linear.move_feature_axis(state.h, old_axis=-1, new_axis=self.linear.mul_feature_axis)
-    c = self.linear.move_feature_axis(state.c, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+    with tf.name_scope("prepare"):
+      # All internal steps performed with moved feature axis, should be faster.
+      x1 = self.linear.move_feature_axis(_x1, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+      x2 = self.linear.move_feature_axis(_x2, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+      h = self.linear.move_feature_axis(state.h, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+      c = self.linear.move_feature_axis(state.c, old_axis=-1, new_axis=self.linear.mul_feature_axis)
+      batch_axis = self.linear.mul_feature_axis - 1
+      if self.rec_dropout_h:
+        h = self.dropout(h, drop_rate=self.rec_dropout_h, inside_loop=True, batch_axis=batch_axis)
 
     with tf.variable_scope("step0"):
       dim = self.num_units
@@ -328,6 +390,8 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     with tf.variable_scope("gating"):
       with tf.variable_scope("cell_in"):
         cell_in = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        if self.rec_dropout_u:
+          cell_in = self.dropout(cell_in, drop_rate=self.rec_dropout_u, inside_loop=True, batch_axis=batch_axis)
         cell_in = tf.tanh(cell_in)
       with tf.variable_scope("gate_in"):
         gate_in = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
