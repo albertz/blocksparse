@@ -249,16 +249,31 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
 
   """
 
-  def __init__(self, num_units, seed, block_size=32, connectivity=5):
+  def __init__(self, num_units,
+               is_training=True, dropout_time_shared=True, rec_dropout_h=0.0, rec_dropout_u=0.0,
+               dense_input_transform=False, **linear_opts):
     """
     :param int num_units:
-    :param int seed:
+    :param bool|tf.Tensor is_training:
+    :param bool dropout_time_shared:
+    :param float rec_dropout_h:
+    :param float rec_dropout_u:
+    :param int seed: for the random sparse connectivity pattern
     :param int block_size:
     :param int connectivity:
+    :param bool dense_input_transform: dense matmul for input
+    :param bool always_dense: will not use blocksparse matmul at all
     """
     super(BlocksparseLSTMCell, self).__init__()
     self.num_units = num_units
-    self.linear = BlocksparseLinear(block_size=block_size, connectivity=connectivity, seed=seed)
+    self.dense_input_transform = dense_input_transform
+    self.is_training = is_training
+    self.rec_dropout_h = rec_dropout_h
+    self.rec_dropout_u = rec_dropout_u
+    self.linear = BlocksparseLinear(**linear_opts)
+    self._num_batch = None
+    self._num_time = None
+    self.dropout = Dropout(is_training=is_training, num_batch=None, shared_over_time=dropout_time_shared)
 
   @property
   def output_size(self):
@@ -270,12 +285,16 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
 
   def get_input_transformed(self, x):
     """
-    :param tf.Tensor x:
+    :param tf.Tensor x: time major (time,batch,dim)
     :rtype: tf.Tensor
     """
     with tf.variable_scope('input'):
+      shape = tf.shape(x)
+      self._num_time = shape[0]
+      self._num_batch = shape[1]
+      self.dropout.num_batch = self._num_batch
       dim = self.num_units * 4
-      x = self.linear(x, dim)
+      x = self.linear(x, dim, dense=self.dense_input_transform)
       x += tf.get_variable("b", shape=(dim,), initializer=tf.zeros_initializer())
       x.set_shape((None, None, dim))  # (time,batch,dim)
       return x
@@ -284,10 +303,14 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
   def call(self, inputs, state):
     assert isinstance(inputs, tf.Tensor)
     assert isinstance(state, rnn_cell.LSTMStateTuple)
-
+    h = state.h
+    if self.rec_dropout_h:
+      h = self.dropout(h, drop_rate=self.rec_dropout_h, inside_loop=True, batch_axis=0)
     dim = self.num_units * 4
-    x = self.linear(state.h, dim, with_bias=False) + inputs
+    x = self.linear(h, dim, with_bias=False) + inputs
     cell_in, gate_in, gate_forget, gate_out = tf.split(x, 4, axis=-1)
+    if self.rec_dropout_u:
+      cell_in = self.dropout(cell_in, drop_rate=self.rec_dropout_u, inside_loop=True, batch_axis=0)
     cell_in = tf.tanh(cell_in)
     gate_in = tf.sigmoid(gate_in)
     gate_forget = tf.sigmoid(gate_forget)
