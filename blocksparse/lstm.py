@@ -22,6 +22,8 @@ class BlocksparseLinear:
     """
     self.block_size = block_size
     self.connectivity = connectivity
+    if always_dense:
+      mul_feature_axis = -1
     self.mul_feature_axis = mul_feature_axis
     self.feature_axis = feature_axis
     self.layer_norm = layer_norm
