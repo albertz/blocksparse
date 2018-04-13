@@ -323,16 +323,16 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
       return x
     assert inside_loop, 'not implemented otherwise yet'
 
-    def get_dropped():
-      if self.dropout_time_shared:
-        # Create mask outside of loop.
-        with tf.control_dependencies(None), tf.name_scope('dropout_mask'):
+    def get_time_shared_dropout_mask():
+      # Create mask outside of loop.
+      with tf.control_dependencies(None), tf.name_scope('time_shared_dropout_mask'):
+        def get():
           shape = x.get_shape().as_list()
           if batch_axis is not None:
             shape[batch_axis] = self._num_batch
           assert all([d is not None for d in shape]), 'x %r, batch %r, axis %r' % (x, self._num_batch, batch_axis)
           import zlib
-          dropout_seed = zlib.crc32(tf.get_variable_scope().name.encode("utf8")) % (2**31 - 1)
+          dropout_seed = zlib.crc32(tf.get_variable_scope().name.encode("utf8")) % (2 ** 31 - 1)
           keep_prob = 1.0 - drop_rate
           # uniform [keep_prob, 1.0 + keep_prob)
           random_tensor = keep_prob
@@ -340,16 +340,19 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
           # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
           binary_tensor = tf.floor(random_tensor)
           mask = binary_tensor * (1.0 / keep_prob)
-        return x * mask
-      else:
-        # Not shared across time. We can use the fast implementation by OpenAI.
-        import blocksparse.ewops as ew
-        x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
-        return x_
+          return mask
+        if self.is_training is True:
+          return get()
+        return tf.cond(self.is_training, get, lambda: 1.0)
 
-    if self.is_training is True:
-      return get_dropped()
-    return tf.cond(self.is_training, get_dropped, lambda: x)
+    if self.dropout_time_shared:
+      return x * get_time_shared_dropout_mask()
+    else:
+      # Not shared across time. We can use the fast implementation by OpenAI.
+      import blocksparse.ewops as ew
+      x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
+      # tf.cond doesn't seem to work here.
+      return tf.where(self.is_training, x_, x)
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
