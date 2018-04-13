@@ -178,6 +178,65 @@ def sparsity_pattern_barabasi_albert(n1, n2, m, seed):
   return a
 
 
+class Dropout:
+  def __init__(self, is_training, num_batch, shared_over_time):
+    """
+    :param bool|tf.Tensor is_training:
+    :param tf.Tensor|None num_batch:
+    :param bool shared_over_time:
+    """
+    self.is_training = is_training
+    self.num_batch = num_batch
+    self.shared_over_time = shared_over_time
+
+  def __call__(self, x, drop_rate, inside_loop, batch_axis=None):
+    """
+    :param tf.Tensor x:
+    :param float drop_rate:
+    :param bool inside_loop: whether this is called from inside the loop
+    :param int batch_axis:
+    :rtype: tf.Tensor
+    """
+    if not drop_rate:
+      return x
+    if self.is_training is False:
+      return x
+    assert inside_loop, 'not implemented otherwise yet'
+
+    def get_time_shared_dropout_mask():
+      # Create mask outside of loop.
+      with tf.control_dependencies(None), tf.name_scope('time_shared_dropout_mask'):
+        def get():
+          shape = x.get_shape().as_list()
+          if batch_axis is not None:
+            shape[batch_axis] = self.num_batch
+          assert all([d is not None for d in shape]), 'x %r, batch %r, axis %r' % (x, self.num_batch, batch_axis)
+          import zlib
+          dropout_seed = zlib.crc32(tf.get_variable_scope().name.encode("utf8")) % (2 ** 31 - 1)
+          keep_prob = 1.0 - drop_rate
+          # uniform [keep_prob, 1.0 + keep_prob)
+          random_tensor = keep_prob
+          random_tensor += tf.random_uniform(shape, seed=dropout_seed, dtype=tf.float32)
+          # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
+          binary_tensor = tf.floor(random_tensor)
+          mask = binary_tensor * (1.0 / keep_prob)
+          return mask
+        if self.is_training is True:
+          return get()
+        return tf.cond(self.is_training, get, lambda: 1.0)
+
+    if self.shared_over_time:
+      x_ = x * get_time_shared_dropout_mask()
+    else:
+      # Not shared across time. We can use the fast implementation by OpenAI.
+      import blocksparse.ewops as ew
+      x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
+      # tf.cond doesn't seem to work here.
+      x_ = tf.where(self.is_training, x_, x)
+    x_.set_shape(x.get_shape())
+    return x_
+
+
 class BlocksparseLSTMCell(rnn_cell.RNNCell):
   """
   Standard LSTM but uses OpenAI blocksparse kernels to support bigger matrices.
@@ -274,7 +333,6 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     self.depth = depth
     self.dense_input_transform = dense_input_transform
     self.is_training = is_training
-    self.dropout_time_shared = dropout_time_shared
     self.rec_dropout_h = rec_dropout_h
     self.rec_dropout_u = rec_dropout_u
     if linear_op:
@@ -283,6 +341,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
       self.linear = BlocksparseLinear(**linear_opts)
     self._num_batch = None
     self._num_time = None
+    self.dropout = Dropout(is_training=is_training, num_batch=None, shared_over_time=dropout_time_shared)
 
   @property
   def output_size(self):
@@ -301,6 +360,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
       shape = tf.shape(x)
       self._num_time = shape[0]
       self._num_batch = shape[1]
+      self.dropout.num_batch = self._num_batch
       with tf.variable_scope('x1'):
         dim = self.num_units
         x1 = self.linear(x, dim, dense=self.dense_input_transform)
@@ -310,53 +370,6 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
         x2 = self.linear(x, dim, dense=self.dense_input_transform)
         x2.set_shape((None, None, dim))  # (time,batch,dim)
       return x1, x2
-
-  def dropout(self, x, drop_rate, inside_loop, batch_axis=None):
-    """
-    :param tf.Tensor x:
-    :param float drop_rate:
-    :param bool inside_loop: whether this is called from inside the loop
-    :param int batch_axis:
-    :rtype: tf.Tensor
-    """
-    if not drop_rate:
-      return x
-    if self.is_training is False:
-      return x
-    assert inside_loop, 'not implemented otherwise yet'
-
-    def get_time_shared_dropout_mask():
-      # Create mask outside of loop.
-      with tf.control_dependencies(None), tf.name_scope('time_shared_dropout_mask'):
-        def get():
-          shape = x.get_shape().as_list()
-          if batch_axis is not None:
-            shape[batch_axis] = self._num_batch
-          assert all([d is not None for d in shape]), 'x %r, batch %r, axis %r' % (x, self._num_batch, batch_axis)
-          import zlib
-          dropout_seed = zlib.crc32(tf.get_variable_scope().name.encode("utf8")) % (2 ** 31 - 1)
-          keep_prob = 1.0 - drop_rate
-          # uniform [keep_prob, 1.0 + keep_prob)
-          random_tensor = keep_prob
-          random_tensor += tf.random_uniform(shape, seed=dropout_seed, dtype=tf.float32)
-          # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
-          binary_tensor = tf.floor(random_tensor)
-          mask = binary_tensor * (1.0 / keep_prob)
-          return mask
-        if self.is_training is True:
-          return get()
-        return tf.cond(self.is_training, get, lambda: 1.0)
-
-    if self.dropout_time_shared:
-      x_ = x * get_time_shared_dropout_mask()
-    else:
-      # Not shared across time. We can use the fast implementation by OpenAI.
-      import blocksparse.ewops as ew
-      x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
-      # tf.cond doesn't seem to work here.
-      x_ = tf.where(self.is_training, x_, x)
-    x_.set_shape(x.get_shape())
-    return x_
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
