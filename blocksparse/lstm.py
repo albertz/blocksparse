@@ -346,13 +346,15 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
         return tf.cond(self.is_training, get, lambda: 1.0)
 
     if self.dropout_time_shared:
-      return x * get_time_shared_dropout_mask()
+      x_ = x * get_time_shared_dropout_mask()
     else:
       # Not shared across time. We can use the fast implementation by OpenAI.
       import blocksparse.ewops as ew
       x_, mask = ew.dropout(x, keep_prob=1.0 - drop_rate)
       # tf.cond doesn't seem to work here.
-      return tf.where(self.is_training, x_, x)
+      x_ = tf.where(self.is_training, x_, x)
+    x_.set_shape(x.get_shape())
+    return x_
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
