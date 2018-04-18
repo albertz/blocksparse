@@ -272,7 +272,6 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
     self.rec_dropout_u = rec_dropout_u
     self.linear = BlocksparseLinear(**linear_opts)
     self._num_batch = None
-    self._num_time = None
     self.dropout = Dropout(is_training=is_training, num_batch=None, shared_over_time=dropout_time_shared)
 
   @property
@@ -283,25 +282,33 @@ class BlocksparseLSTMCell(rnn_cell.RNNCell):
   def state_size(self):
     return rnn_cell.LSTMStateTuple(c=self.num_units, h=self.num_units)
 
-  def get_input_transformed(self, x):
+  def get_input_transformed(self, x, batch_dim=None):
     """
-    :param tf.Tensor x: time major (time,batch,dim)
+    :param tf.Tensor x: time major (time,batch,dim), or (batch,dim)
+    :param tf.Tensor|None batch_dim:
     :rtype: tf.Tensor
     """
     with tf.variable_scope('input'):
       shape = tf.shape(x)
-      self._num_time = shape[0]
-      self._num_batch = shape[1]
+      if batch_dim is not None:
+        self._num_batch = batch_dim
+      elif x.get_shape().ndims == 3:
+        self._num_batch = shape[1]
+      else:
+        assert x.get_shape().ndims == 2
+        self._num_batch = shape[0]
       self.dropout.num_batch = self._num_batch
       dim = self.num_units * 4
       x = self.linear(x, dim, dense=self.dense_input_transform)
       x += tf.get_variable("b", shape=(dim,), initializer=tf.zeros_initializer())
-      x.set_shape((None, None, dim))  # (time,batch,dim)
+      x.set_shape(x.get_shape().as_list()[:-1] + [dim])  # (time,batch,dim)
       return x
 
   # noinspection PyMethodOverriding
   def call(self, inputs, state):
     assert isinstance(inputs, tf.Tensor)
+    if not isinstance(state, rnn_cell.LSTMStateTuple):
+      state = rnn_cell.LSTMStateTuple(*tuple(state))
     assert isinstance(state, rnn_cell.LSTMStateTuple)
     h = state.h
     if self.rec_dropout_h:
@@ -363,7 +370,6 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     else:
       self.linear = BlocksparseLinear(**linear_opts)
     self._num_batch = None
-    self._num_time = None
     self.dropout = Dropout(is_training=is_training, num_batch=None, shared_over_time=dropout_time_shared)
 
   @property
@@ -374,24 +380,30 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
   def state_size(self):
     return rnn_cell.LSTMStateTuple(c=self.num_units, h=self.num_units)
 
-  def get_input_transformed(self, x):
+  def get_input_transformed(self, x, batch_dim=None):
     """
-    :param tf.Tensor x: time-major, (time, batch, dim)
+    :param tf.Tensor x: time-major, (time, batch, dim), or (batch,dim)
+    :param tf.Tensor|None batch_dim:
     :rtype: (tf.Tensor, tf.Tensor)
     """
     with tf.variable_scope('input'):
       shape = tf.shape(x)
-      self._num_time = shape[0]
-      self._num_batch = shape[1]
+      if batch_dim is not None:
+        self._num_batch = batch_dim
+      elif x.get_shape().ndims == 3:
+        self._num_batch = shape[1]
+      else:
+        assert x.get_shape().ndims == 2
+        self._num_batch = shape[0]
       self.dropout.num_batch = self._num_batch
       with tf.variable_scope('x1'):
         dim = self.num_units
         x1 = self.linear(x, dim, dense=self.dense_input_transform)
-        x1.set_shape((None, None, dim))  # (time,batch,dim)
+        x1.set_shape(x.get_shape().as_list()[:-1] + [dim])  # (time,batch,dim)
       with tf.variable_scope('x2'):
         dim = self.num_units
         x2 = self.linear(x, dim, dense=self.dense_input_transform)
-        x2.set_shape((None, None, dim))  # (time,batch,dim)
+        x2.set_shape(x.get_shape().as_list()[:-1] + [dim])  # (time,batch,dim)
       return x1, x2
 
   # noinspection PyMethodOverriding
@@ -403,6 +415,8 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     """
     _x1, _x2 = inputs
     assert isinstance(_x1, tf.Tensor) and isinstance(_x2, tf.Tensor), "inputs %r unexpected" % (inputs,)
+    if not isinstance(state, rnn_cell.LSTMStateTuple):
+      state = rnn_cell.LSTMStateTuple(*tuple(state))
     assert isinstance(state, rnn_cell.LSTMStateTuple)
     with tf.name_scope("prepare"):
       # All internal steps performed with moved feature axis, should be faster.
