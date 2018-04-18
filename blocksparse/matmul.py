@@ -275,14 +275,21 @@ class BlocksparseMatMul(object):
         if gpu:
             return IdentityInit(self.updat_lut, self.CB, self.KB, self.blocks, self.bshift)
 
-        def _initializer(shape, dtype=np.float32, partition_info=None):
+        def _initializer(shape=None, dtype=np.float32, partition_info=None):
+            if shape is not None:
+                assert shape == (self.CB * self.blocks, self.KB * self.blocks)
             print("%s identity_init sparsity(%.2f)" % (self.name, self.sparsity))
             W = np.zeros(self.w_shape, dtype=np.float32)
             for w in range(self.blocks):
                 cb, kb = self.updat_list[w]
                 if (cb % self.KB) == (kb % self.CB):
                     W[w] = np.eye(self.bsize, dtype=np.float32)
-            return tf.constant(W, dtype=dtype)
+            if issubclass(dtype, np.number):
+                return W.astype(dtype)
+            elif issubclass(dtype, tf.DType):
+                return tf.constant(W, dtype=dtype)
+            else:
+                raise TypeError('unexpected dtype %r' % (dtype,))
         return _initializer
 
 
