@@ -55,13 +55,14 @@ class BlocksparseLinear:
     perm.insert(new_axis, old)
     return tf.transpose(x, perm, name="move_feature_axis")
 
-  def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False):
+  def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False, bias_init=0.0):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
     :param int output_dim:
     :param int feature_axis: specifies the feature axis of `x` and the return value
     :param bool with_bias:
     :param bool dense:
+    :param float bias_init:
     :return: x.shape[:-1] + [output_dim] (if feature_axis = -1)
     :rtype: tf.Tensor
     """
@@ -73,6 +74,10 @@ class BlocksparseLinear:
     x_dims = x.get_shape().dims
     input_dim = x_dims[feature_axis].value
     assert input_dim is not None, "%r shape unknown" % (x,)
+    if not bias_init:
+      bias_init = tf.zeros_initializer
+    else:
+      bias_init = lambda c=bias_init: tf.constant_initializer(c)
 
     if self.always_dense:
       dense = True
@@ -107,7 +112,7 @@ class BlocksparseLinear:
     if self.layer_norm and self.fast_layer_norm and mul_feature_axis == len(x_dims) - 1:
       # OpenAI kernel seems broken with axis != -1.
       # See RETURNN test case test_layer_norms.
-      bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
+      bias = tf.get_variable("b", shape=(output_dim,), initializer=bias_init())
       gain = tf.get_variable("g", shape=(output_dim,), initializer=tf.ones_initializer())
       from blocksparse.norms import layer_norm
       y = layer_norm(y, g=gain, b=bias, axis=mul_feature_axis)
@@ -125,7 +130,7 @@ class BlocksparseLinear:
         y = y * inv - m * inv
 
       if with_bias:
-        bias = tf.get_variable("b", shape=(output_dim,), initializer=tf.zeros_initializer())
+        bias = tf.get_variable("b", shape=(output_dim,), initializer=bias_init())
         bias_bc = tf.reshape(bias, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="b_bc")
         y += bias_bc
       else:
@@ -342,6 +347,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
 
   def __init__(self, num_units, depth,
                is_training=True, dropout_time_shared=True, rec_dropout_h=0.0, rec_dropout_u=0.0,
+               forget_gate_bias_init=0.0,
                dense_input_transform=False, linear_op=None, **linear_opts):
     """
     :param int num_units:
@@ -356,6 +362,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
     :param int block_size:
     :param int connectivity:
     :param bool always_dense: blocksparse is not used. all matrices will be dense
+    :param float forget_gate_bias_init:
     """
     assert depth >= 2
     super(BlocksparseMultiplicativeMultistepLSTMCell, self).__init__()
@@ -371,6 +378,7 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
       self.linear = BlocksparseLinear(**linear_opts)
     self._num_batch = None
     self.dropout = Dropout(is_training=is_training, num_batch=None, shared_over_time=dropout_time_shared)
+    self.forget_gate_bias_init = forget_gate_bias_init
 
   @property
   def output_size(self):
@@ -454,7 +462,8 @@ class BlocksparseMultiplicativeMultistepLSTMCell(rnn_cell.RNNCell):
         gate_in = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
         gate_in = tf.sigmoid(gate_in)
       with tf.variable_scope("gate_forget"):
-        gate_forget = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
+        gate_forget = self.linear(
+          h, self.num_units, bias_init=self.forget_gate_bias_init, feature_axis=self.linear.mul_feature_axis)
         gate_forget = tf.sigmoid(gate_forget)
       with tf.variable_scope("gate_out"):
         gate_out = self.linear(h, self.num_units, feature_axis=self.linear.mul_feature_axis)
