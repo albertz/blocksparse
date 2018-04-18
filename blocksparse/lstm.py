@@ -9,6 +9,7 @@ from tensorflow.python.ops.nn import rnn_cell
 class BlocksparseLinear:
   def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1,
                layer_norm=True, fast_layer_norm=True,
+               weights_identity_init=False,
                always_dense=False):
     """
     :param int seed: for the random sparsity pattern(s)
@@ -18,6 +19,7 @@ class BlocksparseLinear:
     :param int feature_axis: specifies the feature axis of the in/out values, see :func:`self.__call__`
     :param bool layer_norm: apply layer normalization in each linear call
     :param bool fast_layer_norm: layer norm implementation by OpenAI
+    :param bool weights_identity_init:
     :param bool always_dense:
     """
     self.block_size = block_size
@@ -28,6 +30,7 @@ class BlocksparseLinear:
     self.feature_axis = feature_axis
     self.layer_norm = layer_norm
     self.fast_layer_norm = fast_layer_norm
+    self.weights_identity_init = weights_identity_init
     self.always_dense = always_dense
     self.random = numpy.random.RandomState(seed)
     self.matmuls = []
@@ -55,6 +58,8 @@ class BlocksparseLinear:
     perm.insert(new_axis, old)
     return tf.transpose(x, perm, name="move_feature_axis")
 
+  _cache_weights_identity_inits = {}  # (input_dim,output_dim) -> matrix
+
   def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False, bias_init=0.0):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
@@ -78,7 +83,6 @@ class BlocksparseLinear:
       bias_init = tf.zeros_initializer
     else:
       bias_init = lambda c=bias_init: tf.constant_initializer(c)
-
     if self.always_dense:
       dense = True
     if dense:
@@ -90,7 +94,21 @@ class BlocksparseLinear:
 
     if dense:
       bsmm = None
-      weights = tf.get_variable("W", shape=(input_dim, output_dim))
+      if self.weights_identity_init:
+        def weights_init(shape, dtype=tf.float32, partition_info=None):
+          # Keep consistent with bsmm below. tf.identity_initializer is different.
+          assert tuple(shape) == (input_dim, output_dim)
+          if (input_dim, output_dim) not in self._cache_weights_identity_inits:
+            w = numpy.zeros((input_dim, output_dim), dtype=numpy.float32)
+            for i in range(input_dim):
+              for j in range(output_dim):
+                if i % output_dim == j % input_dim:
+                  w[i, j] = 1.0
+            self._cache_weights_identity_inits[(input_dim, output_dim)] = w
+          return tf.constant(self._cache_weights_identity_inits[(input_dim, output_dim)], dtype=dtype)
+      else:
+        weights_init = None
+      weights = tf.get_variable("W", shape=(input_dim, output_dim), initializer=weights_init)
       if len(x_dims) > 2:
         x_shape = tf.shape(x)
         x = tf.reshape(x, (-1, input_dim), name='reshape_x')
@@ -105,7 +123,11 @@ class BlocksparseLinear:
       sparsity_pattern = sparsity_pattern_barabasi_albert(
         n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
       bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=mul_feature_axis)
-      weights = tf.get_variable("W", shape=bsmm.w_shape)
+      if self.weights_identity_init:
+        weights_init = bsmm.identity_init()
+      else:
+        weights_init = None
+      weights = tf.get_variable("W", shape=bsmm.w_shape, initializer=weights_init)
       y = bsmm(x, weights)
     assert isinstance(y, tf.Tensor)
 
