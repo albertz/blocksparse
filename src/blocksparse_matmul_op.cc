@@ -79,6 +79,12 @@ public:
             else
                 shapeC.AddDim(params_.K);
 
+        if(N % 4 != 0)
+            return errors::InvalidArgument(
+                "Blocksparse matmul: batch-dim must be multiple of 4 but is ", N,
+                "; shape of the matrix is ",
+                A.shape().DebugString());
+
         Tensor* C;
         Status s = ctx->allocate_output(0, shapeC, &C);
         if (!s.ok()) return s;
