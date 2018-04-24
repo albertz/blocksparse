@@ -60,6 +60,46 @@ class BlocksparseLinear:
 
   _cache_weights_identity_inits = {}  # (input_dim,output_dim) -> matrix
 
+  @classmethod
+  def get_weights_identity_init_func(cls, input_dim, output_dim):
+    def weights_identity_init(shape, dtype=tf.float32, partition_info=None):
+      # Keep consistent with bsmm below. tf.identity_initializer is different.
+      assert tuple(shape) == (input_dim, output_dim)
+      if (input_dim, output_dim) not in cls._cache_weights_identity_inits:
+        w = numpy.zeros((input_dim, output_dim), dtype=numpy.float32)
+        for i in range(input_dim):
+          for j in range(output_dim):
+            if i % output_dim == j % input_dim:
+              w[i, j] = 1.0
+        cls._cache_weights_identity_inits[(input_dim, output_dim)] = w
+      return tf.constant(cls._cache_weights_identity_inits[(input_dim, output_dim)], dtype=dtype)
+    return weights_identity_init
+
+  def sparse_matmul(self, x, feature_axis, output_dim):
+    """
+    :param tf.Tensor x:
+    :param int feature_axis:
+    :param int output_dim:
+    :return: y, weights, bsmm
+    :rtype: (tf.Tensor, tf.Variable, object)
+    """
+    block_size = self.block_size
+    input_dim = x.get_shape().dims[feature_axis].value
+    assert input_dim is not None, "%r shape unknown" % (x,)
+    assert input_dim % block_size == 0 and output_dim % block_size == 0
+    from blocksparse.matmul import BlocksparseMatMul
+    seed = self.random.randint(2 ** 31)
+    sparsity_pattern = sparsity_pattern_barabasi_albert(
+      n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
+    bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=feature_axis)
+    if self.weights_identity_init:
+      weights_init = bsmm.identity_init()
+    else:
+      weights_init = None
+    weights = tf.get_variable("W", shape=bsmm.w_shape, initializer=weights_init)
+    y = bsmm(x, weights)
+    return y, weights, bsmm
+
   def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False, bias_init=0.0):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
@@ -71,8 +111,6 @@ class BlocksparseLinear:
     :return: x.shape[:-1] + [output_dim] (if feature_axis = -1)
     :rtype: tf.Tensor
     """
-    block_size = self.block_size
-    seed = self.random.randint(2 ** 31)
     if feature_axis is None:
       feature_axis = self.feature_axis
     mul_feature_axis = self.mul_feature_axis
@@ -95,17 +133,7 @@ class BlocksparseLinear:
     if dense:
       bsmm = None
       if self.weights_identity_init:
-        def weights_init(shape, dtype=tf.float32, partition_info=None):
-          # Keep consistent with bsmm below. tf.identity_initializer is different.
-          assert tuple(shape) == (input_dim, output_dim)
-          if (input_dim, output_dim) not in self._cache_weights_identity_inits:
-            w = numpy.zeros((input_dim, output_dim), dtype=numpy.float32)
-            for i in range(input_dim):
-              for j in range(output_dim):
-                if i % output_dim == j % input_dim:
-                  w[i, j] = 1.0
-            self._cache_weights_identity_inits[(input_dim, output_dim)] = w
-          return tf.constant(self._cache_weights_identity_inits[(input_dim, output_dim)], dtype=dtype)
+        weights_init = self.get_weights_identity_init_func(input_dim=input_dim, output_dim=output_dim)
       else:
         weights_init = None
       weights = tf.get_variable("W", shape=(input_dim, output_dim), initializer=weights_init)
@@ -118,17 +146,7 @@ class BlocksparseLinear:
       if len(x_dims) > 2:
         y = tf.reshape(y, [x_shape[i] for i in range(len(x_dims) - 1)] + [output_dim], name="reshape_y")
     else:
-      assert input_dim % block_size == 0 and output_dim % block_size == 0
-      from blocksparse.matmul import BlocksparseMatMul
-      sparsity_pattern = sparsity_pattern_barabasi_albert(
-        n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
-      bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=mul_feature_axis)
-      if self.weights_identity_init:
-        weights_init = bsmm.identity_init()
-      else:
-        weights_init = None
-      weights = tf.get_variable("W", shape=bsmm.w_shape, initializer=weights_init)
-      y = bsmm(x, weights)
+      y, weights, bsmm = self.sparse_matmul(x, feature_axis=mul_feature_axis)
     assert isinstance(y, tf.Tensor)
 
     if self.layer_norm and self.fast_layer_norm and mul_feature_axis == len(x_dims) - 1:
