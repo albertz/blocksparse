@@ -100,10 +100,12 @@ class BlocksparseLinear:
     y = bsmm(x, weights)
     return y, weights, bsmm
 
-  def __call__(self, x, output_dim, feature_axis=None, with_bias=True, dense=False, bias_init=0.0):
+  def __call__(self, x, output_dim, output_dim_parts=None, feature_axis=None,
+               with_bias=True, dense=False, bias_init=0.0):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
     :param int output_dim:
+    :param list[int]|None output_dim_parts:
     :param int feature_axis: specifies the feature axis of `x` and the return value
     :param bool with_bias:
     :param bool dense:
