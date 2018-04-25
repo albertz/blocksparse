@@ -146,7 +146,7 @@ class BlocksparseLinear:
       if len(x_dims) > 2:
         y = tf.reshape(y, [x_shape[i] for i in range(len(x_dims) - 1)] + [output_dim], name="reshape_y")
     else:
-      y, weights, bsmm = self.sparse_matmul(x, feature_axis=mul_feature_axis)
+      y, weights, bsmm = self.sparse_matmul(x, feature_axis=mul_feature_axis, output_dim=output_dim)
     assert isinstance(y, tf.Tensor)
 
     if self.layer_norm and self.fast_layer_norm and mul_feature_axis == len(x_dims) - 1:
