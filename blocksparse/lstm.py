@@ -100,12 +100,11 @@ class BlocksparseLinear:
     y = bsmm(x, weights)
     return y, weights, bsmm
 
-  def __call__(self, x, output_dim, output_dim_parts=None, feature_axis=None,
+  def __call__(self, x, output_dim, feature_axis=None,
                with_bias=True, dense=False, bias_init=0.0):
     """
     :param tf.Tensor x: (..., input_dim) (if feature_axis = -1)
     :param int output_dim:
-    :param list[int]|None output_dim_parts:
     :param int feature_axis: specifies the feature axis of `x` and the return value
     :param bool with_bias:
     :param bool dense:
@@ -170,6 +169,8 @@ class BlocksparseLinear:
         gain_bc = tf.reshape(gain, [output_dim if i == mul_feature_axis else 1 for i in range(len(x_dims))], name="g_bc")
         inv *= gain_bc
         y = y * inv - m * inv
+      else:
+        gain = None
 
       if with_bias:
         bias = tf.get_variable("b", shape=(output_dim,), initializer=bias_init())
@@ -182,7 +183,9 @@ class BlocksparseLinear:
     y_dims = list(x_dims)
     y_dims[feature_axis] = output_dim
     y.set_shape(y_dims)
-    self.matmuls.append({"bsmm": bsmm, "x": x, "y": y, "weights": weights, "bias": bias})
+    self.matmuls.append({
+      "bsmm": bsmm, "x": x, "y": y, "weights": weights, "bias": bias, "gain": gain,
+      "input_dim": input_dim, "output_dim": output_dim})
     return y
 
 
