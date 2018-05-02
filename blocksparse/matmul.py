@@ -392,6 +392,39 @@ class BlocksparseMatMul(object):
         #print(O.op.name, O.op.device)
         return O
 
+    def np_update_parts(self, sparse_mat, dense_mat, last_dim_num_splits=1):
+      """
+      :param numpy.ndarray sparse_mat: shape (num blocks, block size, block size) (self.w_shape)
+      :param numpy.ndarray dense_mat: shape (x, y)
+      :param int last_dim_num_splits: e.g. 4 for LSTM when gates are concatenated
+      """
+      assert dense_mat.ndim == 2
+      assert dense_mat.shape[-1] % last_dim_num_splits == 0
+      assert self.KB % last_dim_num_splits == 0
+      old_dim = dense_mat.shape[-1] // last_dim_num_splits
+      assert dense_mat.shape[0] <= self.CB * self.bsize
+      assert dense_mat.shape[1] <= self.KB * self.bsize
+      assert sparse_mat.shape == (self.blocks, self.bsize, self.bsize)
+      for bi in range(self.blocks):
+        cb, kb = self.updat_list[bi]
+        split_idx = kb // (self.KB // last_dim_num_splits)
+        kb = kb % (self.KB // last_dim_num_splits)
+        assert 0 <= split_idx < last_dim_num_splits
+        x_start = cb * self.bsize
+        if x_start >= dense_mat.shape[0]:
+          continue
+        x_end = min(x_start + self.bsize, dense_mat.shape[0])
+        x_len = x_end - x_start
+        y_start = kb * self.bsize
+        if y_start >= old_dim:
+          continue
+        y_len = min(y_start + self.bsize, old_dim) - y_start
+        y_start += split_idx * old_dim
+        y_end = y_start + y_len
+        y_len = y_end - y_start
+        sparse_mat[bi, :x_len, :y_len] = dense_mat[x_start:x_end, y_start:y_end]
+
+
 @ops.RegisterGradient("BlocksparseMatmul")
 def blocksparse_matmul_grad(op, dy, temp):
 

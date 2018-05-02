@@ -196,12 +196,14 @@ class BlocksparseLinear:
 def sparsity_pattern_square_barabasi_albert(n, m, seed, dense=0):
   """
   :param int n:
-  :param int m: 1 <= m <= n
+  :param int m: 1 <= m < n. otherwise will be dense
   :param int seed:
   :param int dense: <= n. this part will be dense
   :return: matrix (n,n), int32
   :rtype: numpy.ndarray
   """
+  if m >= n:
+    return numpy.ones((n, n), dtype=numpy.int32)
   g = networkx.generators.barabasi_albert_graph(n=n, m=m, seed=seed)
   a = networkx.adjacency_matrix(g).toarray().astype(numpy.int32) + numpy.eye(n, dtype=numpy.int32)
   a[0:m, 0:m] = 1
@@ -214,7 +216,7 @@ def sparsity_pattern_barabasi_albert(n1, n2, m, seed, dense=0):
   """
   :param int n1: multiple of n2
   :param int n2: multiple of n1
-  :param int m: 1 <= m <= min(n1, n2)
+  :param int m: 1 <= m < min(n1, n2). otherwise will be dense
   :param int seed:
   :param int dense: <= n1,n2. this part will be dense
   :return: matrix (n1,n2)
@@ -225,7 +227,6 @@ def sparsity_pattern_barabasi_albert(n1, n2, m, seed, dense=0):
   if n1 > n2:
     return sparsity_pattern_barabasi_albert(n1=n2, n2=n1, m=m, seed=seed, dense=dense).transpose()
   assert n2 >= n1 and n2 % n1 == 0
-  assert m <= n1
   random = numpy.random.RandomState(seed)
   seeds = [random.randint(2 ** 31) for i in range(n2 // n1)]
   parts = [
