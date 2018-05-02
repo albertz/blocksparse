@@ -7,7 +7,8 @@ from tensorflow.python.ops.nn import rnn_cell
 
 
 class BlocksparseLinear:
-  def __init__(self, seed, block_size=32, connectivity=5, mul_feature_axis=0, feature_axis=-1,
+  def __init__(self, seed, block_size=32, connectivity=5, connectivity_dense=0,
+               mul_feature_axis=0, feature_axis=-1,
                layer_norm=True, fast_layer_norm=True,
                weights_identity_init=False,
                always_dense=False):
@@ -15,6 +16,7 @@ class BlocksparseLinear:
     :param int seed: for the random sparsity pattern(s)
     :param int block_size: for BlocksparseMatMul
     :param int connectivity: used for :func:`sparsity_pattern_barabasi_albert`
+    :param int connectivity_dense: these amount of dims will be dense. num blocks
     :param int mul_feature_axis: for BlocksparseMatMul
     :param int feature_axis: specifies the feature axis of the in/out values, see :func:`self.__call__`
     :param bool layer_norm: apply layer normalization in each linear call
@@ -24,6 +26,7 @@ class BlocksparseLinear:
     """
     self.block_size = block_size
     self.connectivity = connectivity
+    self.connectivity_dense = connectivity_dense
     if always_dense:
       mul_feature_axis = -1
     self.mul_feature_axis = mul_feature_axis
@@ -90,7 +93,8 @@ class BlocksparseLinear:
     from blocksparse.matmul import BlocksparseMatMul
     seed = self.random.randint(2 ** 31)
     sparsity_pattern = sparsity_pattern_barabasi_albert(
-      n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, seed=seed)
+      n1=input_dim // block_size, n2=output_dim // block_size, m=self.connectivity, dense=self.connectivity_dense,
+      seed=seed)
     bsmm = BlocksparseMatMul(sparsity_pattern, block_size=block_size, feature_axis=feature_axis)
     if self.weights_identity_init:
       weights_init = bsmm.identity_init()
@@ -189,39 +193,43 @@ class BlocksparseLinear:
     return y
 
 
-def sparsity_pattern_square_barabasi_albert(n, m, seed):
+def sparsity_pattern_square_barabasi_albert(n, m, seed, dense=0):
   """
   :param int n:
   :param int m: 1 <= m <= n
   :param int seed:
+  :param int dense: <= n. this part will be dense
   :return: matrix (n,n), int32
   :rtype: numpy.ndarray
   """
   g = networkx.generators.barabasi_albert_graph(n=n, m=m, seed=seed)
   a = networkx.adjacency_matrix(g).toarray().astype(numpy.int32) + numpy.eye(n, dtype=numpy.int32)
   a[0:m, 0:m] = 1
+  if dense:
+    a[0:dense, 0:dense] = 1
   return a
 
 
-def sparsity_pattern_barabasi_albert(n1, n2, m, seed):
+def sparsity_pattern_barabasi_albert(n1, n2, m, seed, dense=0):
   """
   :param int n1: multiple of n2
   :param int n2: multiple of n1
   :param int m: 1 <= m <= min(n1, n2)
   :param int seed:
+  :param int dense: <= n1,n2. this part will be dense
   :return: matrix (n1,n2)
   :rtype: numpy.ndarray
   """
   if n1 == n2:
-    return sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=seed)
+    return sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=seed, dense=dense)
   if n1 > n2:
-    return sparsity_pattern_barabasi_albert(n1=n2, n2=n1, m=m, seed=seed).transpose()
+    return sparsity_pattern_barabasi_albert(n1=n2, n2=n1, m=m, seed=seed, dense=dense).transpose()
   assert n2 >= n1 and n2 % n1 == 0
   assert m <= n1
   random = numpy.random.RandomState(seed)
   seeds = [random.randint(2 ** 31) for i in range(n2 // n1)]
   parts = [
-    sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=seed)
+    sparsity_pattern_square_barabasi_albert(n=n1, m=m, seed=seed, dense=dense)
     for seed in seeds]
   a = numpy.concatenate(parts, axis=1)
   assert a.shape == (n1, n2)
